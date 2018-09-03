@@ -17,7 +17,7 @@ type siteMap map[string]map[string]struct{}
 
 type crawler struct {
 	workers     int
-	root        string
+	root        url.URL
 	maxAttempts int
 	sitemap     siteMap
 	sitemapMtx  sync.Mutex
@@ -47,19 +47,64 @@ func (e *crawlerError) Error() string {
 }
 
 func (c *crawler) crawl(ctx context.Context) {
+	if c.sitemap == nil {
+		c.sitemap = make(map[string]map[string]struct{})
+	}
 
-	urls := make(chan string, 100)
+	ctx, cancel := context.WithCancel(ctx)
+	urls := make(chan crawlReq, 1000)
+	cond := sync.NewCond(&sync.Mutex{})
 
 	for i := 0; i < c.workers; i++ {
-		go c.workerCrawl(ctx, urls)
+		go c.workerCrawl(ctx, cond, urls)
 	}
+
+	urls <- crawlReq{
+		url:      c.root.String(),
+		attempts: 0,
+	}
+
+	cond.L.Lock()
+	for len(urls) > 0 {
+		cond.Wait()
+	}
+
+	cancel()
 }
 
-func (c *crawler) workerCrawl(ctx context.Context, toCrawl <-chan string) {
+func (c *crawler) workerCrawl(ctx context.Context, cond *sync.Cond, toCrawl chan crawlReq) {
 	for {
+
 		select {
-		case url := <-toCrawl:
-			// res, err := c.getURL(ctx, url)
+		case req := <-toCrawl:
+			res, err := c.getURL(ctx, req.url)
+			if err != nil && err.retryable && req.attempts < c.maxAttempts {
+				time.AfterFunc((2<<uint(req.attempts))*500*time.Millisecond, func() {
+					toCrawl <- crawlReq{
+						url:      req.url,
+						attempts: req.attempts + 1,
+					}
+				})
+			}
+
+			c.sitemapMtx.Lock()
+			for k := range res.links {
+				_, ok := c.sitemap[k]
+				if ok {
+					fmt.Printf("adding %s\n", k)
+					delete(res.links, k)
+				} else {
+					fmt.Printf("adding %s\n", k)
+					c.sitemap[k] = make(map[string]struct{})
+					toCrawl <- crawlReq{url: k}
+				}
+			}
+
+			c.sitemap[res.finalURL] = res.links
+			c.sitemapMtx.Unlock()
+
+			cond.Broadcast()
+
 		case <-ctx.Done():
 			return
 		}
@@ -68,6 +113,8 @@ func (c *crawler) workerCrawl(ctx context.Context, toCrawl <-chan string) {
 }
 
 func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawlerError) {
+	fmt.Printf("attempting to get %s\n", url)
+
 	cli := http.Client{
 		Timeout: 5 * time.Second,
 	}
@@ -100,7 +147,7 @@ func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawle
 		}
 	}
 
-	urls := normaliseURLs(c.root, finalURL, links)
+	urls := normaliseURLs(c.root.Host, finalURL, links)
 
 	var cErr *crawlerError
 

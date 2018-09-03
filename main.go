@@ -1,7 +1,8 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"net/url"
 )
 
 const (
@@ -9,5 +10,16 @@ const (
 )
 
 func main() {
-	fmt.Println("hello")
+	crawler := &crawler{
+		maxAttempts: 5,
+		workers:     1,
+		root: url.URL{
+			Scheme: "https",
+			Host:   "monzo.com",
+		},
+	}
+
+	ctx := context.Background()
+
+	crawler.crawl(ctx)
 }
