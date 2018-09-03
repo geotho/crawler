@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 )
 
@@ -12,14 +13,22 @@ const (
 func main() {
 	crawler := &crawler{
 		maxAttempts: 5,
-		workers:     1,
+		workers:     4,
 		root: url.URL{
 			Scheme: "https",
-			Host:   "monzo.com",
+			Host:   "bluevisionlabs.com",
 		},
 	}
 
 	ctx := context.Background()
 
-	crawler.crawl(ctx)
+	sitemap := crawler.crawl(ctx)
+
+	for page, links := range sitemap {
+		fmt.Printf("%s:\n", page)
+		for link := range links {
+			fmt.Printf("\t%s\n", link)
+		}
+		fmt.Println()
+	}
 }

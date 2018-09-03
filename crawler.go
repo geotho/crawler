@@ -46,7 +46,7 @@ func (e *crawlerError) Error() string {
 	return e.err.Error()
 }
 
-func (c *crawler) crawl(ctx context.Context) {
+func (c *crawler) crawl(ctx context.Context) siteMap {
 	if c.sitemap == nil {
 		c.sitemap = make(map[string]map[string]struct{})
 	}
@@ -70,6 +70,9 @@ func (c *crawler) crawl(ctx context.Context) {
 	}
 
 	cancel()
+
+	return c.sitemap
+
 }
 
 func (c *crawler) workerCrawl(ctx context.Context, cond *sync.Cond, toCrawl chan crawlReq) {
@@ -87,13 +90,14 @@ func (c *crawler) workerCrawl(ctx context.Context, cond *sync.Cond, toCrawl chan
 				})
 			}
 
+			if res == nil {
+				continue
+			}
+
 			c.sitemapMtx.Lock()
 			for k := range res.links {
 				_, ok := c.sitemap[k]
-				if ok {
-					fmt.Printf("adding %s\n", k)
-					delete(res.links, k)
-				} else {
+				if !ok {
 					fmt.Printf("adding %s\n", k)
 					c.sitemap[k] = make(map[string]struct{})
 					toCrawl <- crawlReq{url: k}
