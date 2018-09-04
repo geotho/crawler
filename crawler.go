@@ -21,6 +21,7 @@ type crawler struct {
 	maxAttempts int
 	sitemap     siteMap
 	sitemapMtx  sync.Mutex
+	workerWg    sync.WaitGroup
 }
 
 type crawlReq struct {
@@ -53,21 +54,18 @@ func (c *crawler) crawl(ctx context.Context) siteMap {
 
 	ctx, cancel := context.WithCancel(ctx)
 	urls := make(chan crawlReq, 1000)
-	cond := sync.NewCond(&sync.Mutex{})
 
 	for i := 0; i < c.workers; i++ {
-		go c.workerCrawl(ctx, cond, urls)
+		go c.workerCrawl(ctx, urls)
 	}
 
+	c.workerWg.Add(1)
 	urls <- crawlReq{
 		url:      c.root.String(),
 		attempts: 0,
 	}
 
-	cond.L.Lock()
-	for len(urls) > 0 {
-		cond.Wait()
-	}
+	c.workerWg.Wait()
 
 	cancel()
 
@@ -75,14 +73,14 @@ func (c *crawler) crawl(ctx context.Context) siteMap {
 
 }
 
-func (c *crawler) workerCrawl(ctx context.Context, cond *sync.Cond, toCrawl chan crawlReq) {
+func (c *crawler) workerCrawl(ctx context.Context, toCrawl chan crawlReq) {
 	for {
-
 		select {
 		case req := <-toCrawl:
 			res, err := c.getURL(ctx, req.url)
 			if err != nil && err.retryable && req.attempts < c.maxAttempts {
 				time.AfterFunc((2<<uint(req.attempts))*500*time.Millisecond, func() {
+					c.workerWg.Add(1)
 					toCrawl <- crawlReq{
 						url:      req.url,
 						attempts: req.attempts + 1,
@@ -91,15 +89,18 @@ func (c *crawler) workerCrawl(ctx context.Context, cond *sync.Cond, toCrawl chan
 			}
 
 			if res == nil {
+				c.workerWg.Done()
 				continue
 			}
 
 			c.sitemapMtx.Lock()
+
 			for k := range res.links {
 				_, ok := c.sitemap[k]
 				if !ok {
 					fmt.Printf("adding %s\n", k)
 					c.sitemap[k] = make(map[string]struct{})
+					c.workerWg.Add(1)
 					toCrawl <- crawlReq{url: k}
 				}
 			}
@@ -107,7 +108,7 @@ func (c *crawler) workerCrawl(ctx context.Context, cond *sync.Cond, toCrawl chan
 			c.sitemap[res.finalURL] = res.links
 			c.sitemapMtx.Unlock()
 
-			cond.Broadcast()
+			c.workerWg.Done()
 
 		case <-ctx.Done():
 			return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 )
 
 const (
@@ -11,13 +12,30 @@ const (
 )
 
 func main() {
+	err := run()
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+
+	args := os.Args[1:]
+	if len(args) != 1 {
+		return fmt.Errorf("crawler accepts exactly one argument <root-domain>")
+	}
+
+	root := args[0]
+	u, err := url.Parse(root)
+	if err != nil {
+		return fmt.Errorf("error parsing <root-domain>: %s", err)
+	}
+
 	crawler := &crawler{
 		maxAttempts: 5,
-		workers:     4,
-		root: url.URL{
-			Scheme: "https",
-			Host:   "bluevisionlabs.com",
-		},
+		workers:     defaultWorkers,
+		root:        *u,
 	}
 
 	ctx := context.Background()
@@ -31,4 +49,6 @@ func main() {
 		}
 		fmt.Println()
 	}
+
+	return nil
 }
