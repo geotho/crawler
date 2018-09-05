@@ -79,8 +79,8 @@ func (c *crawler) workerCrawl(ctx context.Context, toCrawl chan crawlReq) {
 		case req := <-toCrawl:
 			res, err := c.getURL(ctx, req.url)
 			if err != nil && err.retryable && req.attempts < c.maxAttempts {
-				time.AfterFunc((2<<uint(req.attempts))*500*time.Millisecond, func() {
-					c.workerWg.Add(1)
+				c.workerWg.Add(1)
+				time.AfterFunc((2<<uint(req.attempts))*10*time.Millisecond, func() {
 					toCrawl <- crawlReq{
 						url:      req.url,
 						attempts: req.attempts + 1,
