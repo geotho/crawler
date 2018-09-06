@@ -62,7 +62,7 @@ func TestCrawlerTestRedirects(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	expectedSiteMap := map[string]map[string]struct{}{
+	expectedSiteMap := siteMap{
 		srv.URL: map[string]struct{}{
 			srv.URL + "/a": struct{}{},
 		},
@@ -101,7 +101,7 @@ func TestCrawlerRetryTransientErrors(t *testing.T) {
 
 	const maxAttempts = 5
 
-	expectedSiteMap := map[string]map[string]struct{}{
+	expectedSiteMap := siteMap{
 		srv.URL + "/retry-transient": map[string]struct{}{
 			srv.URL + "/": struct{}{},
 		},
@@ -185,6 +185,12 @@ func TestCrawlerRandomSites(t *testing.T) {
 			siteMapSize: 1000,
 			linkDensity: 1,
 			workers:     4,
+		},
+		testcase{
+			name:        "moreWorkersThanPages",
+			siteMapSize: 5,
+			linkDensity: 1,
+			workers:     10,
 		},
 	}
 

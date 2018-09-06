@@ -50,7 +50,7 @@ func (e *crawlerError) Error() string {
 
 func (c *crawler) crawl(ctx context.Context) siteMap {
 	if c.sitemap == nil {
-		c.sitemap = make(map[string]map[string]struct{})
+		c.sitemap = make(siteMap)
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -77,45 +77,46 @@ func (c *crawler) workerCrawl(ctx context.Context, toCrawl chan crawlReq) {
 	for {
 		select {
 		case req := <-toCrawl:
-			fmt.Printf("fetching %s\n", req.url)
-			res, err := c.getURL(ctx, req.url)
-			if err != nil && err.retryable && req.attempts < c.maxAttempts {
-				c.workerWg.Add(1)
-				time.AfterFunc((2<<uint(req.attempts))*10*time.Millisecond, func() {
-					toCrawl <- crawlReq{
-						url:      req.url,
-						attempts: req.attempts + 1,
-					}
-				})
-			}
-
-			if res == nil {
-				c.workerWg.Done()
-				continue
-			}
-
-			c.sitemapMtx.Lock()
-
-			for k := range res.links {
-				_, ok := c.sitemap[k]
-				if !ok {
-					fmt.Printf("found %s\n", k)
-					c.sitemap[k] = make(map[string]struct{})
-					c.workerWg.Add(1)
-					toCrawl <- crawlReq{url: k}
-				}
-			}
-
-			c.sitemap[res.finalURL] = res.links
-			c.sitemapMtx.Unlock()
-
-			c.workerWg.Done()
-
+			c.doCrawlReq(ctx, req, toCrawl)
 		case <-ctx.Done():
 			return
 		}
 	}
+}
 
+func (c *crawler) doCrawlReq(ctx context.Context, req crawlReq, newWork chan<- crawlReq) {
+	defer c.workerWg.Done()
+
+	fmt.Printf("fetching %s\n", req.url)
+	res, err := c.getURL(ctx, req.url)
+	if err != nil && err.retryable && req.attempts < c.maxAttempts {
+		c.workerWg.Add(1)
+		time.AfterFunc((2<<uint(req.attempts))*10*time.Millisecond, func() {
+			newWork <- crawlReq{
+				url:      req.url,
+				attempts: req.attempts + 1,
+			}
+		})
+	}
+
+	if res == nil {
+		return
+	}
+
+	c.sitemapMtx.Lock()
+	defer c.sitemapMtx.Unlock()
+
+	for k := range res.links {
+		_, ok := c.sitemap[k]
+		if !ok {
+			fmt.Printf("found %s\n", k)
+			c.sitemap[k] = make(map[string]struct{})
+			c.workerWg.Add(1)
+			newWork <- crawlReq{url: k}
+		}
+	}
+
+	c.sitemap[res.finalURL] = res.links
 }
 
 func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawlerError) {
@@ -143,7 +144,7 @@ func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawle
 	finalURL := resp.Request.URL.String()
 
 	// Let's not read the body if what we have is definitely not HTML.
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") && ct != "" {
+	if !shouldReadBody(resp.Header) {
 		return &crawlResult{
 			finalURL: finalURL,
 		}, nil
@@ -160,20 +161,7 @@ func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawle
 
 	urls := normaliseURLs(c.root.Host, finalURL, links)
 
-	var cErr *crawlerError
-
-	switch {
-	case 500 <= resp.StatusCode, resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode == http.StatusRequestTimeout:
-		cErr = &crawlerError{
-			err:       fmt.Errorf("got a %s response code for %s", resp.Status, url),
-			retryable: true,
-		}
-	case 400 <= resp.StatusCode && resp.StatusCode < 500:
-		cErr = &crawlerError{
-			err:       fmt.Errorf("got a %s response code for %s", resp.Status, url),
-			retryable: false,
-		}
-	}
+	cErr := makeCrawlerError(resp.StatusCode)
 
 	crawlResult := &crawlResult{
 		finalURL: finalURL,
@@ -210,4 +198,37 @@ func normaliseURLs(rootDomain, sourcePage string, urls []string) map[string]stru
 	}
 
 	return normalised
+}
+
+func shouldReadBody(header http.Header) bool {
+	contentType := header.Get("Content-Type")
+
+	if contentType == "" {
+		return true
+	}
+
+	if strings.Contains(contentType, "text/html") {
+		return true
+	}
+
+	return false
+}
+
+func makeCrawlerError(statusCode int) *crawlerError {
+	var cErr *crawlerError
+
+	switch {
+	case 500 <= statusCode, statusCode == http.StatusTooManyRequests, statusCode == http.StatusRequestTimeout:
+		cErr = &crawlerError{
+			err:       fmt.Errorf("got a %d response code", statusCode),
+			retryable: true,
+		}
+	case 400 <= statusCode && statusCode < 500:
+		cErr = &crawlerError{
+			err:       fmt.Errorf("got a %d response code", statusCode),
+			retryable: false,
+		}
+	}
+
+	return cErr
 }
