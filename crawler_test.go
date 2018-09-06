@@ -27,7 +27,37 @@ const html = `
 
 var tmpl = template.Must(template.New("html").Parse(html))
 
-func TestCrawlerTestRetries(t *testing.T) {
+func BenchmarkCrawler(b *testing.B) {
+	b.ReportAllocs()
+
+	mux := http.NewServeMux()
+	mux.Handle("/", http.FileServer(http.Dir("testdata")))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	root, err := url.Parse(srv.URL)
+	if err != nil {
+		b.Errorf("could not parse URL %s: %s", srv.URL, err)
+		return
+	}
+
+	crawler := crawler{
+		maxAttempts: 1,
+		workers:     4,
+		root:        *root,
+	}
+
+	ctx := context.Background()
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		sm := crawler.crawl(ctx)
+		_ = sm
+	}
+}
+
+func TestCrawlerTestRedirects(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

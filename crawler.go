@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,7 +67,6 @@ func (c *crawler) crawl(ctx context.Context) siteMap {
 	}
 
 	c.workerWg.Wait()
-
 	cancel()
 
 	return c.sitemap
@@ -77,6 +77,7 @@ func (c *crawler) workerCrawl(ctx context.Context, toCrawl chan crawlReq) {
 	for {
 		select {
 		case req := <-toCrawl:
+			fmt.Printf("fetching %s\n", req.url)
 			res, err := c.getURL(ctx, req.url)
 			if err != nil && err.retryable && req.attempts < c.maxAttempts {
 				c.workerWg.Add(1)
@@ -98,7 +99,7 @@ func (c *crawler) workerCrawl(ctx context.Context, toCrawl chan crawlReq) {
 			for k := range res.links {
 				_, ok := c.sitemap[k]
 				if !ok {
-					fmt.Printf("adding %s\n", k)
+					fmt.Printf("found %s\n", k)
 					c.sitemap[k] = make(map[string]struct{})
 					c.workerWg.Add(1)
 					toCrawl <- crawlReq{url: k}
@@ -118,8 +119,6 @@ func (c *crawler) workerCrawl(ctx context.Context, toCrawl chan crawlReq) {
 }
 
 func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawlerError) {
-	fmt.Printf("attempting to get %s\n", url)
-
 	cli := http.Client{
 		Timeout: 5 * time.Second,
 	}
@@ -143,6 +142,13 @@ func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawle
 	// finalURL is the URL we end up at after potentially following redirects.
 	finalURL := resp.Request.URL.String()
 
+	// Let's not read the body if what we have is definitely not HTML.
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") && ct != "" {
+		return &crawlResult{
+			finalURL: finalURL,
+		}, nil
+	}
+
 	links, err := parse.HTML(resp.Body)
 	defer resp.Body.Close() // want to make sure the body is closed regardless.
 	if err != nil {
@@ -157,9 +163,7 @@ func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawle
 	var cErr *crawlerError
 
 	switch {
-	case 500 <= resp.StatusCode:
-		// Handle the case where we get redirected to foo.com/500.php. This page
-		// still could link to things and we should handle it as such.
+	case 500 <= resp.StatusCode, resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode == http.StatusRequestTimeout:
 		cErr = &crawlerError{
 			err:       fmt.Errorf("got a %s response code for %s", resp.Status, url),
 			retryable: true,
@@ -180,7 +184,7 @@ func (c *crawler) getURL(ctx context.Context, url string) (*crawlResult, *crawle
 
 }
 
-// normaliseURLs normalises a list of URLs relative to a base. It also filters out
+// normaliseURLs normalises a list of URLs relative to a sourcePage. It also filters out
 // URLs that do not belong to the rootDomain, and de-dupes urls that only differ in fragment.
 func normaliseURLs(rootDomain, sourcePage string, urls []string) map[string]struct{} {
 	normalised := make(map[string]struct{}, len(urls)/2)
